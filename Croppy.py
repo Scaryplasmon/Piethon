@@ -10,6 +10,39 @@ from rembg import remove
 import numpy as np
 from queue import Queue
 from PIL import Image, ImageTk, ImageOps
+import cv2
+import random
+
+class CollapsibleFrame(ttk.Frame):
+    """A frame that can be collapsed/expanded"""
+    def __init__(self, parent, text, style='Custom.TFrame', **kwargs):
+        ttk.Frame.__init__(self, parent, style=style, **kwargs)
+        
+        self.show = tk.BooleanVar(value=True)
+        
+        # Title frame with button
+        self.title_frame = ttk.Frame(self, style=style)
+        self.title_frame.pack(fill='x')
+        
+        self.toggle_button = ttk.Button(self.title_frame, 
+                                      text='▼ ' + text,
+                                      command=self.toggle,
+                                      style='Custom.TButton')
+        self.toggle_button.pack(fill='x')
+        
+        # Container for the collapsible content
+        self.sub_frame = ttk.Frame(self, style=style)
+        self.sub_frame.pack(fill='x', expand=True)
+
+    def toggle(self):
+        """Toggle collapse/expand"""
+        if self.show.get():
+            self.sub_frame.pack_forget()
+            self.toggle_button.configure(text='▶ ' + self.toggle_button.cget('text')[2:])
+        else:
+            self.sub_frame.pack(fill='x', expand=True)
+            self.toggle_button.configure(text='▼ ' + self.toggle_button.cget('text')[2:])
+        self.show.set(not self.show.get())
 
 class ImageCropperApp(TkinterDnD.Tk):
     def __init__(self):
@@ -163,6 +196,16 @@ class ImageCropperApp(TkinterDnD.Tk):
         self.grid_resize_handle = None
         self.grid_size = [0, 0]  # [width, height] of grid
         
+        # Add lasso-related variables
+        self.lasso_mode = False
+        self.lasso_points = []
+        self.lasso_path = None
+        self.blend_radius = 5  # pixels for edge blending
+        
+        # Add color picker variables
+        self.bg_picker_color = [255, 255, 255]  # Default white
+        self.picking_color = False
+        
         self.setup_ui()
         self.bind_events()
         self.start_background_processing()
@@ -176,78 +219,123 @@ class ImageCropperApp(TkinterDnD.Tk):
         left_control_panel = ttk.Frame(main_container, style='Custom.TFrame')
         left_control_panel.pack(side='left', fill='y', padx=5, pady=5)
         
-        # Mode switch button
-        self.mode_btn = ttk.Button(left_control_panel, text="Mode: Square", 
+        # Crop Tools Panel
+        crop_tools = CollapsibleFrame(left_control_panel, "Crop Tools")
+        crop_tools.pack(fill='x', pady=2)
+        
+        self.mode_btn = ttk.Button(crop_tools.sub_frame, text="Mode: Square", 
                                   command=self.toggle_mode,
                                   style='Custom.TButton')
         self.mode_btn.pack(fill='x', pady=2)
         
-        # Save button
-        self.save_btn = ttk.Button(left_control_panel, text="Save Crop (S)", 
+        self.lasso_btn = ttk.Button(crop_tools.sub_frame, text="Lasso Tool", 
+                                  command=self.toggle_lasso,
+                                  style='Custom.TButton')
+        self.lasso_btn.pack(fill='x', pady=2)
+        
+        self.save_btn = ttk.Button(crop_tools.sub_frame, text="Save Crop (S)", 
                                   command=self.save_crop,
                                   style='Custom.TButton')
         self.save_btn.pack(fill='x', pady=2)
         
-        # Base name input with styled Entry
-        ttk.Label(left_control_panel, text="Base name:", 
+        # Output Settings Panel
+        output_settings = CollapsibleFrame(left_control_panel, "Output Settings")
+        output_settings.pack(fill='x', pady=2)
+        
+        ttk.Label(output_settings.sub_frame, text="Base name:", 
                  style='Custom.TLabel').pack(fill='x', pady=2)
-        self.base_name = ttk.Entry(left_control_panel, 
+        self.base_name = ttk.Entry(output_settings.sub_frame, 
                                  style='Custom.TEntry',
                                  font=('Segoe UI', 9))
         self.base_name.insert(0, "crop")
         self.base_name.pack(fill='x', pady=2)
         
-        # Output size input
-        ttk.Label(left_control_panel, text="Output size (px):", 
+        ttk.Label(output_settings.sub_frame, text="Output size (px):", 
                  style='Custom.TLabel').pack(fill='x', pady=2)
-        self.size_entry = ttk.Entry(left_control_panel,
+        self.size_entry = ttk.Entry(output_settings.sub_frame,
                                   textvariable=self.output_size_var,
                                   style='Custom.TEntry',
                                   font=('Segoe UI', 9))
         self.size_entry.pack(fill='x', pady=2)
         
-        # Folder selection button
-        self.folder_btn = ttk.Button(left_control_panel, text="Select Output Folder", 
+        self.folder_btn = ttk.Button(output_settings.sub_frame, text="Select Output Folder", 
                                     command=self.select_output_folder,
                                     style='Custom.TButton')
         self.folder_btn.pack(fill='x', pady=2)
         
-        # Background removal controls
-        ttk.Separator(left_control_panel, orient='horizontal').pack(fill='x', pady=5)
+        # Background Settings Panel
+        bg_settings = CollapsibleFrame(left_control_panel, "Background Settings")
+        bg_settings.pack(fill='x', pady=2)
         
         self.rembg_var = tk.BooleanVar(value=False)
-        self.rembg_check = ttk.Checkbutton(left_control_panel, 
+        self.rembg_check = ttk.Checkbutton(bg_settings.sub_frame, 
                                           text="Remove Background",
                                           variable=self.rembg_var,
                                           style='Custom.TCheckbutton')
         self.rembg_check.pack(fill='x', pady=2)
         
-        # Add threshold control
-        ttk.Label(left_control_panel, text="Removal Threshold :", 
+        ttk.Label(bg_settings.sub_frame, text="Removal Threshold:", 
                  style='Custom.TLabel').pack(fill='x', pady=2)
         self.threshold_var = tk.DoubleVar(value=0.5)  # Default threshold
-        self.threshold_slider = ttk.Scale(left_control_panel, 
+        self.threshold_slider = ttk.Scale(bg_settings.sub_frame, 
                                         from_=0.0, to=1.0,
                                         variable=self.threshold_var,
                                         orient='horizontal',
                                         style='Custom.Horizontal.TScale')
         self.threshold_slider.pack(fill='x', pady=2)
         
-        ttk.Label(left_control_panel, text="Background:", 
+        # Color Picker Section
+        ttk.Label(bg_settings.sub_frame, text="Background Color:", 
                  style='Custom.TLabel').pack(fill='x', pady=2)
-        for color in ['white', 'transparent', 'black']:  # Reordered with white first
-            ttk.Radiobutton(left_control_panel, text=color.capitalize(),
-                          variable=self.bg_color_var, value=color,
-                          style='Custom.TCheckbutton').pack(fill='x')
+        self.color_picker_btn = ttk.Button(bg_settings.sub_frame, 
+                                         text="Pick Color (Alt+Click)", 
+                                         command=self.toggle_color_picker,
+                                         style='Custom.TButton')
+        self.color_picker_btn.pack(fill='x', pady=2)
+        self.color_display = tk.Canvas(bg_settings.sub_frame, 
+                                     height=20, 
+                                     bg='#FFFFFF')
+        self.color_display.pack(fill='x', pady=2)
         
-        # Status label at bottom of left panel
-        self.status_label = ttk.Label(left_control_panel, text="", 
-                                     style='Custom.TLabel',
-                                     wraplength=150)
-        self.status_label.pack(side='bottom', fill='x', pady=5)
+        # Edge Blending Settings
+        ttk.Label(bg_settings.sub_frame, text="Blend Radius:", 
+                 style='Custom.TLabel').pack(fill='x', pady=2)
+        self.blend_radius_var = tk.IntVar(value=5)
+        self.blend_radius_slider = ttk.Scale(bg_settings.sub_frame, 
+                                           from_=1, to=20,
+                                           variable=self.blend_radius_var,
+                                           orient='horizontal',
+                                           style='Custom.Horizontal.TScale')
+        self.blend_radius_slider.pack(fill='x', pady=2)
         
-        # Navigation buttons
-        nav_frame = ttk.Frame(left_control_panel, style='Custom.TFrame')
+        # Grid Settings Panel
+        grid_settings = CollapsibleFrame(left_control_panel, "Grid Settings")
+        grid_settings.pack(fill='x', pady=2)
+        
+        self.grid_btn = ttk.Button(grid_settings.sub_frame, text="Toggle Grid", 
+                                 command=self.toggle_grid,
+                                 style='Custom.TButton')
+        self.grid_btn.pack(fill='x', pady=2)
+        
+        row_frame = ttk.Frame(grid_settings.sub_frame, style='Custom.TFrame')
+        row_frame.pack(fill='x', pady=2)
+        ttk.Label(row_frame, text="Rows:", 
+                 style='Custom.TLabel').pack(side='left')
+        ttk.Entry(row_frame, textvariable=self.grid_rows,
+                 width=5, style='Custom.TEntry').pack(side='right')
+        
+        col_frame = ttk.Frame(grid_settings.sub_frame, style='Custom.TFrame')
+        col_frame.pack(fill='x', pady=2)
+        ttk.Label(col_frame, text="Cols:", 
+                 style='Custom.TLabel').pack(side='left')
+        ttk.Entry(col_frame, textvariable=self.grid_cols,
+                 width=5, style='Custom.TEntry').pack(side='right')
+        
+        # Navigation Panel
+        nav_panel = CollapsibleFrame(left_control_panel, "Navigation")
+        nav_panel.pack(fill='x', pady=2)
+        
+        nav_frame = ttk.Frame(nav_panel.sub_frame, style='Custom.TFrame')
         nav_frame.pack(fill='x', pady=2)
         
         self.prev_btn = ttk.Button(nav_frame, text="← Prev", 
@@ -260,29 +348,11 @@ class ImageCropperApp(TkinterDnD.Tk):
                                   style='Custom.TButton')
         self.next_btn.pack(side='left', expand=True, fill='x', padx=(2, 0))
         
-        grid_frame = ttk.LabelFrame(left_control_panel, text="Grid Controls", 
-                                  style='Custom.TFrame')
-        grid_frame.pack(fill='x', pady=5)
-        
-        self.grid_btn = ttk.Button(grid_frame, text="Toggle Grid", 
-                                 command=self.toggle_grid,
-                                 style='Custom.TButton')
-        self.grid_btn.pack(fill='x', pady=2)
-        
-        # Row and column inputs
-        row_frame = ttk.Frame(grid_frame, style='Custom.TFrame')
-        row_frame.pack(fill='x', pady=2)
-        ttk.Label(row_frame, text="Rows:", 
-                 style='Custom.TLabel').pack(side='left')
-        ttk.Entry(row_frame, textvariable=self.grid_rows,
-                 width=5, style='Custom.TEntry').pack(side='right')
-        
-        col_frame = ttk.Frame(grid_frame, style='Custom.TFrame')
-        col_frame.pack(fill='x', pady=2)
-        ttk.Label(col_frame, text="Cols:", 
-                 style='Custom.TLabel').pack(side='left')
-        ttk.Entry(col_frame, textvariable=self.grid_cols,
-                 width=5, style='Custom.TEntry').pack(side='right')
+        # Status label at bottom
+        self.status_label = ttk.Label(left_control_panel, text="", 
+                                     style='Custom.TLabel',
+                                     wraplength=150)
+        self.status_label.pack(side='bottom', fill='x', pady=5)
         
         # Center panel with canvas
         center_panel = ttk.Frame(main_container, style='Custom.TFrame')
@@ -509,7 +579,7 @@ class ImageCropperApp(TkinterDnD.Tk):
         self.drag_handle = position
         self.drag_start = (event.x, event.y)
 
-    def update_handle_drag(self, event, position):
+    def update_handle_drag(self, event):
         """Update crop rectangle while dragging handle"""
         if not self.crop_rect:
             return
@@ -519,16 +589,16 @@ class ImageCropperApp(TkinterDnD.Tk):
         dy = event.y - self.drag_start[1]
         
         # Update coordinates based on handle position
-        if position == 'nw':
+        if self.drag_handle == 'nw':
             x1 += dx
             y1 += dy
-        elif position == 'ne':
+        elif self.drag_handle == 'ne':
             x2 += dx
             y1 += dy
-        elif position == 'sw':
+        elif self.drag_handle == 'sw':
             x1 += dx
             y2 += dy
-        elif position == 'se':
+        elif self.drag_handle == 'se':
             x2 += dx
             y2 += dy
         
@@ -538,7 +608,7 @@ class ImageCropperApp(TkinterDnD.Tk):
             height = y2 - y1
             size = min(abs(width), abs(height))
             
-            if position in ['nw', 'se']:
+            if self.drag_handle in ['nw', 'se']:
                 if abs(width) > abs(height):
                     x2 = x1 + (size if width > 0 else -size)
                 else:
@@ -584,7 +654,17 @@ class ImageCropperApp(TkinterDnD.Tk):
         self.draw_crop_rect(*self.crop_rect)
     
     def end_crop(self, event):
+        """End crop or lasso selection"""
+        if self.lasso_mode and self.lasso_points:
+            # Close the lasso path
+            self.lasso_points.append(self.lasso_points[0])
+            self.canvas.delete('lasso')
+            self.canvas.create_line(self.lasso_points, fill='white', width=2, tags='lasso')
+            self.lasso_path = self.lasso_points.copy()  # Store a copy of the points
+            return "break"  # Prevent other handlers
+        
         self.drag_start = None
+        self.drag_handle = None
     
     def start_pan(self, event):
         self.pan_start = (event.x - self.image_position[0], 
@@ -770,7 +850,7 @@ class ImageCropperApp(TkinterDnD.Tk):
         self.queue_items.insert(0, queue_item)
         
         # Remove excess items
-        while len(self.queue_items) > 3:  # Keep 3 items
+        while len(self.queue_items) > 6:  # Keep 3 items
             old_item = self.queue_items.pop()
             if old_item['separator']:
                 old_item['separator'].destroy()
@@ -853,10 +933,16 @@ class ImageCropperApp(TkinterDnD.Tk):
                 break
 
     def save_crop(self):
-        if self.grid_mode:
+        """Save crop based on current mode"""
+        if not self.image:
+            return
+        
+        if self.lasso_mode and self.lasso_path:
+            self.save_lasso_crop()
+        elif self.grid_mode:
             self.save_grid_crops()
         else:
-            if not self.crop_rect or not self.image:
+            if not self.crop_rect:
                 return
             
             # Get crop coordinates
@@ -916,7 +1002,7 @@ class ImageCropperApp(TkinterDnD.Tk):
                     else:
                         # Save normal crop directly
                         cropped.save(filename)
-                        self.add_to_queue_display(cropped, filename)  # Add to queue display
+                        self.add_to_queue_display(cropped, filename)
                         self.create_save_popup(filename)
                         self.status_label.config(text=f"Saved: {os.path.basename(filename)}")
                     
@@ -926,9 +1012,15 @@ class ImageCropperApp(TkinterDnD.Tk):
 
     def handle_click(self, event):
         """Handle mouse click based on modifier keys"""
-        if event.state & 0x20000:  # Alt is pressed
-            return  # Let grid handling take over
-        elif event.state & 0x4:    # Ctrl is pressed
+        if event.state & 0x20000 or self.picking_color:  # Alt is pressed or picking color
+            self.pick_color(event)
+            return "break"
+        
+        if self.lasso_mode:
+            self.start_lasso(event)
+            return "break"  # Prevent other handlers
+        
+        if event.state & 0x4:    # Ctrl is pressed
             return  # Let grid resize handling take over
         elif event.state & 0x1:    # Shift is pressed
             # Check if click is near a handle
@@ -956,6 +1048,10 @@ class ImageCropperApp(TkinterDnD.Tk):
 
     def handle_drag(self, event):
         """Handle drag based on initial action"""
+        if self.lasso_mode:
+            self.update_lasso(event)
+            return "break"  # Prevent other handlers
+        
         if event.state & 0x1 and self.drag_handle:  # Shift pressed and handle selected
             self.update_handle_drag(event)
         elif self.drag_start:  # Normal crop
@@ -1166,6 +1262,8 @@ class ImageCropperApp(TkinterDnD.Tk):
         offset_x = (self.grid_position[0] - self.image_position[0]) / self.zoom
         offset_y = (self.grid_position[1] - self.image_position[1]) / self.zoom
         
+        target_size = self.output_size_var.get()
+        
         # Crop and save each cell
         for row in range(self.grid_rows.get()):
             for col in range(self.grid_cols.get()):
@@ -1184,8 +1282,7 @@ class ImageCropperApp(TkinterDnD.Tk):
                 # Crop the cell
                 cropped = self.image.crop((x1, y1, x2, y2))
                 
-                # Resize if needed
-                target_size = self.output_size_var.get()
+                # Resize to target size (square for grid)
                 cropped = cropped.resize((target_size, target_size), 
                                       Image.Resampling.LANCZOS)
                 
@@ -1213,6 +1310,210 @@ class ImageCropperApp(TkinterDnD.Tk):
                 self.counter += 1
         
         self.status_label.config(text=f"Saved {self.grid_rows.get() * self.grid_cols.get()} grid crops")
+
+    def toggle_lasso(self):
+        """Toggle lasso selection mode"""
+        self.lasso_mode = not self.lasso_mode
+        self.lasso_btn.config(text="Lasso: On" if self.lasso_mode else "Lasso: Off")
+        if self.lasso_mode:
+            self.canvas.config(cursor="crosshair")
+        else:
+            self.canvas.config(cursor="")
+            self.clear_lasso()
+
+    def clear_lasso(self):
+        """Clear lasso selection"""
+        self.lasso_points = []
+        self.canvas.delete('lasso')
+        self.lasso_path = None
+
+    def start_lasso(self, event):
+        """Start lasso selection"""
+        self.clear_lasso()
+        self.lasso_points = [(event.x, event.y)]
+        self.canvas.create_line(event.x, event.y, event.x, event.y,
+                              fill='white', width=2, tags='lasso')
+
+    def update_lasso(self, event):
+        """Update lasso selection path"""
+        if not self.lasso_points:
+            return
+        
+        self.lasso_points.append((event.x, event.y))
+        points = self.lasso_points
+        
+        # Redraw the entire lasso path
+        self.canvas.delete('lasso')
+        if len(points) > 1:
+            self.canvas.create_line(points, fill='white', width=2, tags='lasso')
+
+    def get_edge_color(self, img, mask):
+        """Get mean color from 3 random edge pixels"""
+        edge_pixels = []
+        height, width = mask.shape
+        
+        # Find edge pixels
+        for y in range(height):
+            for x in range(width):
+                if mask[y, x] == 0:  # Outside the mask
+                    # Check if any neighboring pixel is inside the mask
+                    for dy in [-1, 0, 1]:
+                        for dx in [-1, 0, 1]:
+                            ny, nx = y + dy, x + dx
+                            if (0 <= ny < height and 0 <= nx < width and 
+                                mask[ny, nx] == 1):
+                                edge_pixels.append((x, y))
+                                break
+                        if (x, y) in edge_pixels:
+                            break
+        
+        # Get 3 random edge pixels
+        if len(edge_pixels) >= 3:
+            sample_points = random.sample(edge_pixels, 3)
+            colors = [img[y, x] for x, y in sample_points]
+            return np.mean(colors, axis=0)
+        else:
+            return np.array([255, 255, 255])  # Default to white if not enough edge pixels
+
+    def save_lasso_crop(self):
+        """Save lasso selection as crop"""
+        if not self.lasso_path or not self.image:
+            return
+            
+        try:
+            # Convert lasso points to image coordinates
+            image_points = [
+                (int((x - self.image_position[0]) / self.zoom),
+                 int((y - self.image_position[1]) / self.zoom))
+                for x, y in self.lasso_path
+            ]
+            
+            # Get bounding box of lasso selection
+            min_x = max(0, min(x for x, _ in image_points))
+            min_y = max(0, min(y for _, y in image_points))
+            max_x = min(self.image.width, max(x for x, _ in image_points))
+            max_y = min(self.image.height, max(y for _, y in image_points))
+            
+            # Create a cropped version of the image and mask
+            crop_region = (min_x, min_y, max_x, max_y)
+            cropped_img = self.image.crop(crop_region)
+            
+            # Convert to numpy array for processing
+            img_array = np.array(cropped_img)
+            
+            # Create mask for the cropped region
+            mask = np.zeros(img_array.shape[:2], dtype=np.uint8)
+            adjusted_points = np.array([(x - min_x, y - min_y) for x, y in image_points], dtype=np.int32)
+            cv2.fillPoly(mask, [adjusted_points], 1)
+            
+            # Create background with picked color
+            bg_color = self.bg_picker_color
+            output = np.full((512, 512, 3), bg_color, dtype=np.uint8)
+            
+            # Resize cropped image and mask to fit in 512x512
+            aspect_ratio = (max_x - min_x) / (max_y - min_y)
+            if aspect_ratio > 1:
+                new_width = 512
+                new_height = int(512 / aspect_ratio)
+            else:
+                new_height = 512
+                new_width = int(512 * aspect_ratio)
+            
+            resized_img = cv2.resize(img_array, (new_width, new_height))
+            resized_mask = cv2.resize(mask, (new_width, new_height))
+            
+            # Calculate position to center the image
+            y_offset = (512 - new_height) // 2
+            x_offset = (512 - new_width) // 2
+            
+            # Create alpha mask with improved blending
+            blend_radius = self.blend_radius_var.get()
+            # Apply multiple passes of Gaussian blur for smoother transition
+            alpha = resized_mask.astype(float)
+            for _ in range(3):  # Multiple passes for smoother blend
+                alpha = cv2.GaussianBlur(alpha, 
+                                       (blend_radius*2+1, blend_radius*2+1), 
+                                       blend_radius/2)
+            
+            # Enhance edge transition
+            alpha = np.clip(alpha * 1.2 - 0.1, 0, 1)  # Adjust contrast of the mask
+            
+            # Blend the image onto the background with improved transition
+            for c in range(3):
+                output[y_offset:y_offset+new_height, 
+                      x_offset:x_offset+new_width, c] = (
+                    resized_img[..., c] * alpha + 
+                    bg_color[c] * (1 - alpha)
+                )
+            
+            # Convert back to PIL Image
+            output_img = Image.fromarray(output)
+            
+            # Generate filename and save
+            base = self.base_name.get() or "crop"
+            filename = os.path.join(
+                self.output_dir,
+                f"{base}_lasso_{self.counter}.png"
+            )
+            
+            if self.rembg_var.get():
+                self.rembg_queue.put({
+                    'image': output_img,
+                    'filename': filename,
+                    'remove_bg': True,
+                    'bg_color': self.bg_color_var.get()
+                })
+                self.add_to_queue_display(output_img, filename)
+            else:
+                output_img.save(filename)
+                self.add_to_queue_display(output_img, filename)
+            
+            self.counter += 1
+            self.clear_lasso()
+            
+        except Exception as e:
+            print(f"Error saving lasso crop: {str(e)}")
+            self.status_label.config(text="Error saving lasso crop")
+
+    def toggle_color_picker(self):
+        """Toggle color picker mode"""
+        self.picking_color = not self.picking_color
+        if self.picking_color:
+            self.color_picker_btn.config(text="Picking... (Click to sample)")
+            self.canvas.config(cursor="crosshair")
+        else:
+            self.color_picker_btn.config(text="Pick Color (Alt+Click)")
+            self.canvas.config(cursor="")
+
+    def pick_color(self, event):
+        """Pick color from image at click position"""
+        if not self.image or not self.photo:
+            return
+        
+        # Convert click position to image coordinates
+        x = int((event.x - self.image_position[0]) / self.zoom)
+        y = int((event.y - self.image_position[1]) / self.zoom)
+        
+        # Ensure coordinates are within image bounds
+        if 0 <= x < self.image.width and 0 <= y < self.image.height:
+            # Get color at point
+            color = self.image.getpixel((x, y))
+            if len(color) > 3:  # If RGBA, convert to RGB
+                color = color[:3]
+            
+            self.bg_picker_color = list(color)
+            
+            # Update color display
+            hex_color = '#{:02x}{:02x}{:02x}'.format(*color)
+            self.color_display.configure(bg=hex_color)
+            
+            # Update status
+            self.status_label.config(text=f"Picked color: RGB{color}")
+            
+            # Exit picking mode
+            self.picking_color = False
+            self.color_picker_btn.config(text="Pick Color (Alt+Click)")
+            self.canvas.config(cursor="")
 
 if __name__ == "__main__":
     app = ImageCropperApp()
