@@ -170,3 +170,18 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 .vscode/settings.json
+pyside6docs/expenses.txt
+pyside6docs/extendedexplorer.txt
+pyside6docs/gettingstarted.txt
+pyside6docs/index.txt
+pyside6docs/pyside6-qsb.txt
+pyside6docs/qmlsqlintegration.txt
+pyside6docs/tablewidget.txt
+pyside6docs/translations.txt
+pyside6docs/treewidget.txt
+pyside6docs2/QActionInput.txt
+pyside6docs2/QBrush.txt
+pyside6docs2/QFont.txt
+pyside6docs2/QPainter.txt
+pyside6docs2/qtquick-input-mouseevents.txt
+links.txt
