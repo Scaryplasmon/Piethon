@@ -26,6 +26,7 @@ class DrawingCanvas(QWidget):
         self.picked_color = None    # Added this initialization
         self.shape_points = []      # Added this initialization
         self.is_drawing_shape = False
+        self.eraser_mode = False  # Add eraser state
         
         # Get main window reference
         self.main_window = parent
@@ -52,12 +53,13 @@ class DrawingCanvas(QWidget):
             self.black_bg = QPixmap(512, 512)
             self.black_bg.fill(QColor(0, 0, 0))
             
-            # Add undo button with emoji icon
-            self.undo_btn = QPushButton("↩️", self)
-            self.undo_btn.setToolTip("Undo last stroke (Ctrl+Z)")
-            self.undo_btn.setFixedSize(30, 30)
-            self.undo_btn.clicked.connect(self.undo)
-            self.undo_btn.setStyleSheet("""
+            # Add eraser button with emoji icon
+            self.eraser_btn = QPushButton("⚪", self)  # White circle for eraser
+            self.eraser_btn.setToolTip("Toggle Eraser Mode (Draw/Erase)")
+            self.eraser_btn.setFixedSize(30, 30)
+            self.eraser_btn.setCheckable(True)
+            self.eraser_btn.clicked.connect(self.toggle_eraser)
+            self.eraser_btn.setStyleSheet("""
                 QPushButton {
                     background-color: #ffb3b3;
                     border: none;
@@ -65,11 +67,15 @@ class DrawingCanvas(QWidget):
                     font-size: 18px;
                     padding: 0px;
                 }
+                QPushButton:checked {
+                    background-color: #ff8080;
+                    font-size: 18px;
+                }
                 QPushButton:hover {
                     background-color: #ffc6c6;
                 }
             """)
-            self.undo_btn.move(10, 10)
+            self.eraser_btn.move(10, 10)
             
             # Add color picker button with emoji icon
             self.color_picker_btn = QPushButton("🎯", self)  # Changed to target emoji
@@ -165,16 +171,24 @@ class DrawingCanvas(QWidget):
             self.shape_points.append(event.position().toPoint())
             self.update_temp_shape()
         elif self.drawing:
-            # Normal drawing
             end_point = event.position().toPoint()
             painter = QPainter(self.drawing_layer)
             painter.setRenderHint(QPainter.Antialiasing)
             
-            pen = QPen()
-            pen.setWidth(self.brush_size)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setColor(QColor(255, 255, 255, int(255 * self.brush_intensity)))
-            painter.setPen(pen)
+            if self.eraser_mode:
+                # Erase by drawing with composition mode clear
+                painter.setCompositionMode(QPainter.CompositionMode_Clear)
+                pen = QPen()
+                pen.setWidth(self.brush_size * 2)  # Make eraser slightly bigger
+                pen.setCapStyle(Qt.RoundCap)
+                painter.setPen(pen)
+            else:
+                # Normal drawing mode
+                pen = QPen()
+                pen.setWidth(self.brush_size)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setColor(QColor(255, 255, 255, int(255 * self.brush_intensity)))
+                painter.setPen(pen)
             
             painter.drawLine(self.last_point, end_point)
             self.last_point = end_point
@@ -261,6 +275,31 @@ class DrawingCanvas(QWidget):
             # Restore redo state
             self.drawing_layer = self.redo_stack.pop()
             self.update()
+
+    def toggle_eraser(self):
+        """Toggle between draw and erase mode"""
+        self.eraser_mode = self.eraser_btn.isChecked()
+        if self.eraser_mode:
+            self.setCursor(Qt.CrossCursor)
+            self.eraser_btn.setText("❌")  # Change to X when active
+        else:
+            self.setCursor(Qt.ArrowCursor)
+            self.eraser_btn.setText("⚪")  # Change back to circle when inactive
+
+    def save_drawing(self, output_path):
+        """Save drawing with black background"""
+        # Create final image with black background
+        final_image = QImage(512, 512, QImage.Format_RGB32)
+        final_image.fill(QColor(0, 0, 0))  # Fill with solid black
+        
+        # Draw the drawing layer on top
+        painter = QPainter(final_image)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.drawPixmap(0, 0, self.drawing_layer)
+        painter.end()
+        
+        # Save as RGB image
+        final_image.save(output_path, quality=100)
 
 class TagButton(QWidget):
     def __init__(self, text, position, parent=None):
@@ -569,15 +608,6 @@ class MainWindow(QMainWindow):
         
         self.setCentralWidget(central_widget)
         
-        # Set focus policy for main window to handle keyboard events
-        self.setFocusPolicy(Qt.StrongFocus)
-        
-        # Make sure other widgets don't steal arrow key focus
-        central_widget.setFocusPolicy(Qt.NoFocus)
-        slider_panel.setFocusPolicy(Qt.NoFocus)
-        self.reference_canvas.setFocusPolicy(Qt.NoFocus)
-        self.edges_canvas.setFocusPolicy(Qt.NoFocus)
-        
     @Slot()
     def select_image_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
@@ -738,42 +768,27 @@ class MainWindow(QMainWindow):
         # Save images and txt pairs with Ctrl+S
         if event.key() == Qt.Key_S and event.modifiers() == Qt.ControlModifier:
             self.save_all()  # Only save pairs, not config
-            event.accept()  # Accept the event
         
         # Undo with Ctrl+Z
         elif event.key() == Qt.Key_Z and event.modifiers() == Qt.ControlModifier:
             if not self.text_editor.hasFocus():  # Don't capture if editing text
                 self.reference_canvas.undo()
-                event.accept()
             
         # Redo with Ctrl+Shift+Z
         elif (event.key() == Qt.Key_Z and 
               event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier)):
             if not self.text_editor.hasFocus():  # Don't capture if editing text
                 self.reference_canvas.redo()
-                event.accept()
             
-        # Navigate with arrow keys - force handling at window level
+        # Navigate with arrow keys
         elif event.key() == Qt.Key_Left:
             if not self.text_editor.hasFocus():  # Don't capture if editing text
                 self.prev_pair()
-                event.accept()
-                return True  # Prevent event propagation
         elif event.key() == Qt.Key_Right:
             if not self.text_editor.hasFocus():  # Don't capture if editing text
                 self.next_pair()
-                event.accept()
-                return True  # Prevent event propagation
         else:
             super().keyPressEvent(event)
-
-    def keyReleaseEvent(self, event):
-        """Handle key release events"""
-        if event.key() in (Qt.Key_Left, Qt.Key_Right):
-            if not self.text_editor.hasFocus():
-                event.accept()
-                return True
-        super().keyReleaseEvent(event)
 
     def save_text(self):
         """Save changes to text file"""
@@ -810,6 +825,21 @@ class MainWindow(QMainWindow):
         else:
             self.status_label.setText(f"Warning: No matching edge image found: {base_name}")
             
+    def save_drawing(self, output_path):
+        """Save drawing with black background"""
+        # Create final image with black background
+        final_image = QImage(512, 512, QImage.Format_RGB32)
+        final_image.fill(QColor(0, 0, 0))  # Fill with solid black
+        
+        # Draw the drawing layer on top
+        painter = QPainter(final_image)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.drawPixmap(0, 0, self.drawing_layer)
+        painter.end()
+        
+        # Save as RGB image
+        final_image.save(output_path, quality=100)
+
     def save_all(self):
         """Save both drawing and text files"""
         if not self.paired_files or self.current_index < 0:
@@ -827,10 +857,7 @@ class MainWindow(QMainWindow):
             if self.drawing_output_folder:
                 base_name = os.path.basename(self.paired_files[self.current_index][0])
                 output_path = os.path.join(self.drawing_output_folder, base_name)
-                
-                # Convert QPixmap to image and save
-                image = self.reference_canvas.drawing_layer.toImage()
-                image.save(output_path)
+                self.reference_canvas.save_drawing(output_path)
                 
             # Show save confirmation
             self.show_save_confirmation(txt_path, output_path if self.drawing_output_folder else None)
