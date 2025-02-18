@@ -148,38 +148,45 @@ class MediaToolkitApp(tk.Tk):
 
     def rename_files_dialog(self):
         self.rename_files(self.input_dir.get(), self.output_dir.get())
-    def extract_number(self, filename):
-        match = re.search(r'\d+', filename)
-        return int(match.group()) if match else float('inf')
+
+    def natural_sort_key(self, s):
+        # Create a key for natural (Windows-like) sorting: split text into numeric and non-numeric parts.
+        import re
+        return [int(chunk) if chunk.isdigit() else chunk.lower() for chunk in re.split('(\d+)', s)]
 
     def rename_files(self, input_path, output_dir):
         try:
+            # Define valid file extensions for image and text files.
+            valid_extensions = ('.png', '.jpg', '.jpeg', '.txt')
             input_files = sorted(
-                [f for f in os.listdir(input_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))],
-                key=self.extract_number
+                [f for f in os.listdir(input_path) if f.lower().endswith(valid_extensions)],
+                key=self.natural_sort_key
             )
-                
-            # Filter and sort output files that are PNG or JPG
             output_files = sorted(
-                [f for f in os.listdir(output_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))],
-                key=self.extract_number
+                [f for f in os.listdir(output_dir) if f.lower().endswith(valid_extensions)],
+                key=self.natural_sort_key
             )
 
-            # Check if the number of files matches
+            # Check if the number of files matches between folders.
             if len(input_files) != len(output_files):
-                print("Error: The number of images in the input and output folders does not match.")
-                messagebox.showerror("Error", "The number of images in the input and output folders does not match.")
+                print("Error: The number of files in the input and output folders does not match.")
+                messagebox.showerror("Error", "The number of files in the input and output folders does not match.")
                 return
-            else:
-                for input_file, output_file in zip(input_files, output_files):
-                    input_full_path = os.path.join(input_path, input_file)
-                    output_full_path = os.path.join(output_dir, output_file)
-                    new_output_path = os.path.join(output_dir, input_file)
-                    os.rename(output_full_path, new_output_path)
-                
+
+            # For each corresponding file pair, rename the output file.
+            # New name is built from the base name of the input file plus the original extension of the output file.
+            for input_file, output_file in zip(input_files, output_files):
+                output_full_path = os.path.join(output_dir, output_file)
+                base_name = os.path.splitext(input_file)[0]
+                output_ext = os.path.splitext(output_file)[1]
+                new_name = base_name + output_ext
+                new_output_path = os.path.join(output_dir, new_name)
+                os.rename(output_full_path, new_output_path)
+
             messagebox.showinfo("Success", "Files have been renamed successfully.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to rename: {str(e)}")
+
     def optimize_images_dialog(self):
         self.optimize_images(self.input_dir.get(), self.output_dir.get())
         

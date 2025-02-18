@@ -3,14 +3,15 @@ import os
 from pathlib import Path
 import json
 from PIL import Image, ImageDraw
-from PySide6.QtCore import Qt, Signal, Slot, QObject, QSize, QTimer
+from PySide6.QtCore import Qt, Signal, Slot, QObject, QSize, QTimer, QEvent
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QIcon, QPainterPath
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSlider, QFileDialog, QScrollArea,
-    QGraphicsView, QGraphicsScene, QFrame, QTextEdit, QInputDialog
+    QGraphicsView, QGraphicsScene, QFrame, QTextEdit, QInputDialog, QColorDialog, QCheckBox
 )
 import random
+import re
 
 class DrawingCanvas(QWidget):
     def __init__(self, parent=None):
@@ -54,7 +55,7 @@ class DrawingCanvas(QWidget):
             self.black_bg.fill(QColor(0, 0, 0))
             
             # Add eraser button with emoji icon
-            self.eraser_btn = QPushButton("⚪", self)  # White circle for eraser
+            self.eraser_btn = QPushButton("✏️", self)  # White circle for eraser
             self.eraser_btn.setToolTip("Toggle Eraser Mode (Draw/Erase)")
             self.eraser_btn.setFixedSize(30, 30)
             self.eraser_btn.setCheckable(True)
@@ -95,6 +96,26 @@ class DrawingCanvas(QWidget):
                 }
             """)
             self.color_picker_btn.move(50, 10)
+
+            # ===== New HEX picker button =====
+            self.hex_picker_btn = QPushButton("🎨", self)
+            self.hex_picker_btn.setToolTip("Pick a color and add its HEX code to text")
+            self.hex_picker_btn.setFixedSize(30, 30)
+            self.hex_picker_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #73eafa;
+                    border: none;
+                    border-radius: 15px;
+                    font-size: 16px;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    background-color: #c6e3ff;
+                }
+            """)
+            self.hex_picker_btn.move(90, 10)
+            self.hex_picker_btn.clicked.connect(self.open_hex_color_picker)
+            # ===== End of new HEX picker button =====
             
     def set_base_image(self, image_path):
         if image_path and os.path.exists(image_path):
@@ -284,7 +305,7 @@ class DrawingCanvas(QWidget):
             self.eraser_btn.setText("❌")  # Change to X when active
         else:
             self.setCursor(Qt.ArrowCursor)
-            self.eraser_btn.setText("⚪")  # Change back to circle when inactive
+            self.eraser_btn.setText("✏️")  # Change back to circle when inactive
 
     def save_drawing(self, output_path):
         """Save drawing with black background"""
@@ -300,6 +321,29 @@ class DrawingCanvas(QWidget):
         
         # Save as RGB image
         final_image.save(output_path, quality=100)
+
+    def get_color_at(self, pos):
+        """Get color at position in the base image"""
+        if self.base_layer:
+            image = self.base_layer.toImage()
+            if image.valid(pos.x(), pos.y()):
+                return QColor(image.pixel(pos.x(), pos.y()))
+        return None
+
+    def open_hex_color_picker(self):
+        """
+        Open a color dialog and append the selected color's HEX code
+        to the text editor (txt viewport) in the main window.
+        """
+        color = QColorDialog.getColor()
+        if color.isValid() and self.main_window is not None and hasattr(self.main_window, 'text_editor'):
+            hex_color = color.name().upper()  # Get HEX color code in the format "#RRGGBB"
+            # Retrieve existing text from the text editor
+            current_text = self.main_window.text_editor.toPlainText()
+            # Append the HEX color code (separated by a space)
+            hex_color = hex_color.lower()
+            new_text = f"{hex_color},{current_text}".strip()
+            self.main_window.text_editor.setPlainText(new_text)
 
 class TagButton(QWidget):
     def __init__(self, text, position, parent=None):
@@ -366,6 +410,46 @@ class TagButton(QWidget):
             random.randint(180, 255)
         )
 
+class ColorPaletteWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(40)
+        self.colors = []
+        
+    def set_colors(self, hex_codes):
+        self.colors = [QColor(code) for code in hex_codes if QColor(code).isValid()]
+        self.update()
+        
+    def paintEvent(self, event):
+        if not self.colors:
+            return
+            
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Calculate color block width
+        width = self.width() / len(self.colors)
+        height = self.height()
+        
+        for i, color in enumerate(self.colors):
+            # Draw color block
+            painter.fillRect(i * width, 0, width, height, color)
+            
+            # Draw hex code text
+            painter.setPen(self.get_contrast_color(color))
+            painter.drawText(
+                i * width, 0, width, height,
+                Qt.AlignCenter,
+                color.name().upper()
+            )
+            
+    def get_contrast_color(self, bg_color):
+        # Calculate luminance to determine text color
+        luminance = (0.299 * bg_color.red() + 
+                    0.587 * bg_color.green() + 
+                    0.114 * bg_color.blue()) / 255
+        return QColor(Qt.black) if luminance > 0.5 else QColor(Qt.white)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -423,6 +507,11 @@ class MainWindow(QMainWindow):
         # Setup UI first
         self.setup_ui()
         
+        # Install a global event filter so arrow keys will navigate images
+        QApplication.instance().installEventFilter(self)
+        # Optionally, force the main window to have focus
+        self.setFocusPolicy(Qt.StrongFocus)
+        
         # Try to load config only after UI is setup (optional)
         try:
             self.load_config()
@@ -457,8 +546,8 @@ class MainWindow(QMainWindow):
         
         # Define buttons with icons and colors
         buttons_config = [
-            ("📁", "Select Reference Images", "#FFB3B3", self.select_image_folder),
-            ("🖼️", "Select Edges", "#B3FFB3", self.select_edges_folder),
+            ("🖼️", "Select Reference Images", "#FFB3B3", self.select_image_folder),
+            ("🕸️", "Select Edges", "#B3FFB3", self.select_edges_folder),
             ("📝", "Select Text Folder", "#B3B3FF", self.select_txt_folder),
             ("💾", "Select Drawing Output", "#FFE4B3", self.select_drawing_output),
             ("⚙️", "Save Config", "#E4B3FF", self.save_config),
@@ -486,6 +575,22 @@ class MainWindow(QMainWindow):
             """)
             button_layout.addWidget(btn)
             
+        # # Add bis filter checkbox to button panel
+        # self.bis_checkbox = QCheckBox("Show only _bis pairs")
+        # self.bis_checkbox.setStyleSheet("""
+        #     QCheckBox {
+        #         color: white;
+        #         background-color: #2d2d2d;
+        #         padding: 5px;
+        #         border-radius: 5px;
+        #     }
+        #     QCheckBox:hover {
+        #         background-color: #3d3d3d;
+        #     }
+        # """)
+        # self.bis_checkbox.stateChanged.connect(self.update_pairs)
+        # button_layout.addWidget(self.bis_checkbox)
+        
         main_layout.addWidget(button_panel)
         
         # Content area with tags
@@ -553,7 +658,16 @@ class MainWindow(QMainWindow):
                 font-size: 12pt;
             }
         """)
-        main_content_layout.addWidget(self.text_editor, stretch=1)
+        
+        # Add color palette below text editor
+        self.palette_widget = ColorPaletteWidget()
+        text_layout = QVBoxLayout()
+        text_layout.addWidget(self.text_editor)
+        text_layout.addWidget(self.palette_widget)
+        main_content_layout.addLayout(text_layout, stretch=1)
+        
+        # Connect text editor to palette update
+        self.text_editor.textChanged.connect(self.update_color_palette)
         
         content_layout.addWidget(main_content)
         main_layout.addWidget(content_area)
@@ -585,6 +699,98 @@ class MainWindow(QMainWindow):
         self.layer_opacity_slider.valueChanged.connect(self.update_layer_opacity)
         slider_layout.addWidget(QLabel("Layer Opacity"))
         slider_layout.addWidget(self.layer_opacity_slider)
+
+        # Add bis filter checkbox and settings
+        bis_container = QWidget()
+        bis_layout = QHBoxLayout(bis_container)
+        bis_layout.setContentsMargins(0, 0, 0, 0)
+        bis_layout.setSpacing(5)
+
+        self.bis_suffix = "_bis"  # Default suffix
+        self.bis_checkbox = QCheckBox("🪣")
+        self.bis_checkbox.setFixedHeight(40)
+        self.bis_checkbox.setToolTip("Filter")
+        self.bis_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: white;
+                background-color: #2d2d2d;
+                padding: 5px;
+                border-radius: 5px;
+            }
+            QCheckBox:hover {
+                background-color: #3d3d3d;
+            }
+        """)
+        self.bis_checkbox.stateChanged.connect(self.update_pairs)
+        
+        # Add settings button
+        self.bis_settings_btn = QPushButton("🧌")
+        self.bis_settings_btn.setFixedSize(40, 40)
+        self.bis_settings_btn.setToolTip("Filter Rule")
+        self.bis_settings_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: white;
+                border: none;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #3d3d3d;
+                border-radius: 10px;
+            }
+        """)
+        self.bis_settings_btn.clicked.connect(self.change_bis_suffix)
+        
+        bis_layout.addWidget(self.bis_checkbox)
+        bis_layout.addWidget(self.bis_settings_btn)
+        bis_layout.addStretch()
+        
+        slider_layout.addWidget(bis_container)
+        
+        # Add delete functionality UI elements
+        delete_container = QWidget()
+        delete_layout = QHBoxLayout(delete_container)
+        delete_layout.setContentsMargins(0, 0, 0, 0)
+        delete_layout.setSpacing(5)
+
+        # Delete output folder selection button
+        self.delete_output_btn = QPushButton("📁")
+        self.delete_output_btn.setToolTip("Select folder for moved/deleted files")
+        self.delete_output_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff8080;
+                border: none;
+                border-radius: 10px;
+                padding: 5px 5px;
+            }
+            QPushButton:hover {
+                background-color: #ff9999;
+            }
+        """)
+        self.delete_output_btn.clicked.connect(self.select_delete_output)
+
+        # Delete/Move button
+        self.delete_btn = QPushButton("🗑️")
+        self.delete_btn.setToolTip("Move current files to backup folder")
+        self.delete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff4d4d;
+                border: none;
+                border-radius: 10px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #ff6666;
+            }
+        """)
+        self.delete_btn.clicked.connect(self.move_current_files)
+        self.delete_btn.setEnabled(False)  # Disabled until output folder is selected
+
+        delete_layout.addWidget(self.delete_btn)
+        delete_layout.addWidget(self.delete_output_btn)
+        # delete_layout.addStretch()
+
+        slider_layout.addWidget(delete_container)
         
         main_layout.addWidget(slider_panel)
         
@@ -608,6 +814,9 @@ class MainWindow(QMainWindow):
         
         self.setCentralWidget(central_widget)
         
+        # Add delete output folder to instance variables
+        self.delete_output_folder = None
+        
     @Slot()
     def select_image_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Image Folder")
@@ -617,7 +826,10 @@ class MainWindow(QMainWindow):
                               if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
             if self.image_files:
                 self.current_index = 0
+                self.update_pairs()  # Added this to refresh pairs
                 self.load_current_pair()
+                # Update config with new folder
+                self.config['image_folder'] = folder
                 
     @Slot()
     def select_txt_folder(self):
@@ -627,6 +839,17 @@ class MainWindow(QMainWindow):
             self.txt_files = [f for f in os.listdir(folder) 
                             if f.lower().endswith('.txt')]
             self.update_pairs()
+            # Update config with new folder
+            self.config['txt_folder'] = folder
+
+    @Slot()
+    def select_edges_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Edges Folder")
+        if folder:
+            self.edges_folder = folder
+            self.load_edges_image()
+            # Update config with new folder
+            self.config['edges_folder'] = folder
 
     def update_pairs(self):
         """Match image files with their corresponding text files"""
@@ -634,7 +857,18 @@ class MainWindow(QMainWindow):
             return
             
         self.paired_files = []
-        for img_file in self.image_files:
+        filtered_image_files = self.image_files
+
+        # Filter images if bis checkbox is checked
+        if self.bis_checkbox.isChecked():
+            # Get base names of all images that have a bis version
+            bis_images = {f for f in self.image_files if f.endswith(f'{self.bis_suffix}.png')}
+            original_names = {f.replace(f'{self.bis_suffix}.png', '.png') for f in bis_images}
+            # Keep both original images and their bis versions
+            filtered_image_files = [f for f in self.image_files 
+                                  if f in original_names or f.replace(f'{self.bis_suffix}.png', '.png') in original_names]
+
+        for img_file in filtered_image_files:
             base_name = os.path.splitext(img_file)[0]
             txt_file = base_name + '.txt'
             
@@ -695,11 +929,8 @@ class MainWindow(QMainWindow):
             if not ok or not tag_text:
                 return
             
-            position, ok = QInputDialog.getItem(self, "Tag Position", 
-                                              "Add tag at:", ["start", "end"], 
-                                              current=1, editable=False)
-            if not ok:
-                return
+            # Remove position selection since tags will always go at the end
+            position = "end"  # Default to end always
 
         # Create tag button
         tag_button = TagButton(tag_text, position)
@@ -707,7 +938,7 @@ class MainWindow(QMainWindow):
         self.tag_buttons[tag_text] = tag_button
         
         # Connect main button click
-        tag_button.button.clicked.connect(lambda: self.add_tag_to_text(tag_text, position))
+        tag_button.button.clicked.connect(lambda: self.add_tag_to_text(tag_text))
         
         # Connect control buttons
         control_buttons = tag_button.findChildren(QPushButton)[1:]  # Skip main button
@@ -719,7 +950,7 @@ class MainWindow(QMainWindow):
         control_buttons[1].clicked.connect(lambda: self.remove_tag_from_text(tag_text))
         
         # Add to text button (➕)
-        control_buttons[2].clicked.connect(lambda: self.add_tag_to_text(tag_text, position))
+        control_buttons[2].clicked.connect(lambda: self.add_tag_to_text(tag_text))
 
     def delete_tag(self, tag_text):
         """Delete tag completely"""
@@ -728,20 +959,54 @@ class MainWindow(QMainWindow):
             del self.tag_buttons[tag_text]
             self.remove_tag_from_text(tag_text)
 
-    def add_tag_to_text(self, tag_text, position):
-        """Add tag to text at specified position"""
+    def add_tag_to_text(self, tag_text):
+        """Add tag to text before the closing '>'"""
         current_text = self.text_editor.toPlainText()
-        if position == "start":
-            new_text = f"{tag_text}, {current_text}"
-        else:  # end
-            new_text = f"{current_text}, {tag_text}"
+        
+        # Find the closing '>' of the tags section
+        tag_end = current_text.find('>')
+        if tag_end == -1:
+            # If no tag section exists, create one
+            new_text = f"<tags: {tag_text}>"
+            if current_text:
+                new_text += "\n" + current_text
+        else:
+            # Insert the new tag before the '>'
+            if current_text[tag_end-1] == ' ':
+                # If there's already a space before '>', just add the tag
+                new_text = current_text[:tag_end-1] + f", {tag_text}" + current_text[tag_end-1:]
+            else:
+                # Add a space before the tag if needed
+                new_text = current_text[:tag_end] + f", {tag_text}" + current_text[tag_end:]
+                
         self.text_editor.setPlainText(new_text)
 
     def remove_tag_from_text(self, tag_text):
-        """Remove tag from text"""
+        """Remove tag from text while preserving the tag structure"""
         current_text = self.text_editor.toPlainText()
-        # Remove tag from start or end, with possible comma and space
-        new_text = current_text.replace(f"{tag_text}, ", "").replace(f", {tag_text}", "").replace(tag_text, "")
+        tag_end = current_text.find('>')
+        
+        if tag_end == -1:
+            return
+            
+        # Get the tags section
+        tags_section = current_text[:tag_end]
+        rest_of_text = current_text[tag_end:]
+        
+        # Remove the tag and clean up extra commas and spaces
+        tags_section = tags_section.replace(f", {tag_text}", "")  # Remove with comma before
+        tags_section = tags_section.replace(f"{tag_text}, ", "")  # Remove with comma after
+        tags_section = tags_section.replace(tag_text, "")         # Remove without comma
+        
+        # Clean up multiple commas and spaces
+        while ",  " in tags_section:
+            tags_section = tags_section.replace(",  ", ", ")
+        while ",," in tags_section:
+            tags_section = tags_section.replace(",,", ",")
+        if tags_section.endswith(", "):
+            tags_section = tags_section[:-2]
+            
+        new_text = tags_section + rest_of_text
         self.text_editor.setPlainText(new_text)
 
     @Slot()
@@ -763,30 +1028,30 @@ class MainWindow(QMainWindow):
         self.reference_canvas.update()
         self.edges_canvas.update()
 
+    def eventFilter(self, obj, event):
+        """Intercept arrow key events globally for image navigation."""
+        if event.type() == QEvent.KeyPress:
+            # Check for left/right arrow keys while not editing text.
+            if event.key() == Qt.Key_Left and not self.text_editor.hasFocus():
+                self.prev_pair()
+                return True  # Consume the event
+            elif event.key() == Qt.Key_Right and not self.text_editor.hasFocus():
+                self.next_pair()
+                return True  # Consume the event
+        # Otherwise, pass through to the base implementation
+        return super().eventFilter(obj, event)
+
     def keyPressEvent(self, event):
-        """Handle keyboard shortcuts"""
-        # Save images and txt pairs with Ctrl+S
+        """Handle other keyboard shortcuts."""
         if event.key() == Qt.Key_S and event.modifiers() == Qt.ControlModifier:
-            self.save_all()  # Only save pairs, not config
-        
-        # Undo with Ctrl+Z
+            self.save_all()
         elif event.key() == Qt.Key_Z and event.modifiers() == Qt.ControlModifier:
-            if not self.text_editor.hasFocus():  # Don't capture if editing text
+            if not self.text_editor.hasFocus():
                 self.reference_canvas.undo()
-            
-        # Redo with Ctrl+Shift+Z
         elif (event.key() == Qt.Key_Z and 
               event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier)):
-            if not self.text_editor.hasFocus():  # Don't capture if editing text
+            if not self.text_editor.hasFocus():
                 self.reference_canvas.redo()
-            
-        # Navigate with arrow keys
-        elif event.key() == Qt.Key_Left:
-            if not self.text_editor.hasFocus():  # Don't capture if editing text
-                self.prev_pair()
-        elif event.key() == Qt.Key_Right:
-            if not self.text_editor.hasFocus():  # Don't capture if editing text
-                self.next_pair()
         else:
             super().keyPressEvent(event)
 
@@ -806,12 +1071,75 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Error saving text: {str(e)}")
 
     @Slot()
-    def select_edges_folder(self):  # renamed from select_second_image_folder
-        folder = QFileDialog.getExistingDirectory(self, "Select Edges Folder")
+    def select_drawing_output(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Drawing Output Folder")
         if folder:
-            self.edges_folder = folder
-            self.load_edges_image()
+            self.drawing_output_folder = folder
+
+    def save_config(self):
+        """Save current state to config file"""
+        config_path = 'data_manager_config.json'
+        self.config.update({
+            'image_folder': self.image_folder,
+            'txt_folder': self.txt_folder,
+            'edges_folder': self.edges_folder,
+            'drawing_output_folder': self.drawing_output_folder,
+            'current_index': self.current_index,
+            'tags': [[btn.text, btn.position] for btn in self.tag_buttons.values()]
+        })
+        
+        try:
+            with open(config_path, 'w') as f:
+                json.dump(self.config, f)
+            self.status_label.setText(f"Config saved to {config_path}")
+        except Exception as e:
+            self.status_label.setText(f"Error saving config: {str(e)}")
+
+    def load_config(self):
+        """Load state from config file"""
+        config_path = 'data_manager_config.json'
+        try:
+            with open(config_path, 'r') as f:
+                self.config = json.load(f)
+                
+            # Only restore folders if they exist
+            if os.path.exists(self.config.get('image_folder', '')):
+                self.image_folder = self.config['image_folder']
+            else:
+                self.image_folder = None
+                
+            if os.path.exists(self.config.get('txt_folder', '')):
+                self.txt_folder = self.config['txt_folder']
+            else:
+                self.txt_folder = None
+                
+            if os.path.exists(self.config.get('edges_folder', '')):
+                self.edges_folder = self.config['edges_folder']
+            else:
+                self.edges_folder = None
+                
+            # Only restore files and index if we have valid folders
+            if self.image_folder and self.txt_folder:
+                self.image_files = [f for f in os.listdir(self.image_folder) 
+                                  if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                self.txt_files = [f for f in os.listdir(self.txt_folder) 
+                                if f.lower().endswith('.txt')]
+                self.update_pairs()
+                if self.paired_files:  # Only set index if we have pairs
+                    self.current_index = min(self.config.get('current_index', 0), 
+                                          len(self.paired_files) - 1)
+                    self.load_current_pair()
             
+            # Restore tags
+            for tag_text, position in self.config.get('tags', []):
+                self.add_new_tag(tag_text, position, from_config=True)
+                
+            self.status_label.setText("Config loaded successfully")
+        except FileNotFoundError:
+            self.status_label.setText("No config file found")
+        except Exception as e:
+            self.status_label.setText(f"Error loading config: {str(e)}")
+
     def load_edges_image(self):  # renamed from load_second_image
         """Load corresponding image from edges folder"""
         if not self.edges_folder or not self.paired_files or self.current_index < 0:
@@ -875,63 +1203,128 @@ class MainWindow(QMainWindow):
         # Auto-clear after 3 seconds
         QTimer.singleShot(3000, lambda: self.status_label.setText(""))
 
-    @Slot()
-    def select_drawing_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Drawing Output Folder")
-        if folder:
-            self.drawing_output_folder = folder
-
-    def save_config(self):
-        """Save current state to config file"""
-        config_path = 'data_manager_config.json'
-        self.config.update({
-            'image_folder': self.image_folder,
-            'txt_folder': self.txt_folder,
-            'edges_folder': self.edges_folder,
-            'drawing_output_folder': self.drawing_output_folder,
-            'current_index': self.current_index,
-            'tags': [[btn.text, btn.position] for btn in self.tag_buttons.values()]
-        })
+    def update_color_palette(self):
+        """Parse hex codes from text and update palette"""
+        # Find all hex codes in text (both #RRGGBB and #RGB formats)
+        text = self.text_editor.toPlainText()
+        hex_pattern = r'#(?:[0-9a-fA-F]{3}){1,2}\b'
+        hex_codes = re.findall(hex_pattern, text)
         
-        try:
-            with open(config_path, 'w') as f:
-                json.dump(self.config, f)
-            self.status_label.setText(f"Config saved to {config_path}")
-        except Exception as e:
-            self.status_label.setText(f"Error saving config: {str(e)}")
+        # Convert 3-digit hex to 6-digit format
+        processed_codes = []
+        for code in hex_codes:
+            if len(code) == 4:  # #RGB format
+                r, g, b = code[1], code[2], code[3]
+                code = f"#{r}{r}{g}{g}{b}{b}"
+            processed_codes.append(code)
+            
+        # Update palette widget
+        self.palette_widget.set_colors(processed_codes)
 
-    def load_config(self):
-        """Load state from config file"""
-        config_path = 'data_manager_config.json'
+    def change_bis_suffix(self):
+        """Open dialog to change the bis suffix"""
+        new_suffix, ok = QInputDialog.getText(
+            self,
+            "Change Suffix",
+            "Enter new suffix for duplicates:",
+            text=self.bis_suffix
+        )
+        if ok and new_suffix:
+            self.bis_suffix = new_suffix
+            self.update_pairs()
+
+    def select_delete_output(self):
+        """Select output folder for moved/deleted files"""
+        folder = QFileDialog.getExistingDirectory(self, "Select Delete Output Folder")
+        if folder:
+            self.delete_output_folder = folder
+            # Create subfolders if they don't exist
+            self.create_delete_subfolders()
+            self.delete_btn.setEnabled(True)
+            self.status_label.setText(f"Delete output folder set to: {folder}")
+
+    def create_delete_subfolders(self):
+        """Create subfolders for different file types"""
+        if not self.delete_output_folder:
+            return
+
+        self.deleted_refs_folder = os.path.join(self.delete_output_folder, "reference_images")
+        self.deleted_edges_folder = os.path.join(self.delete_output_folder, "edge_images")
+        self.deleted_txt_folder = os.path.join(self.delete_output_folder, "text_files")
+
+        # Create all subfolders
+        for folder in [self.deleted_refs_folder, self.deleted_edges_folder, self.deleted_txt_folder]:
+            os.makedirs(folder, exist_ok=True)
+
+    def move_current_files(self):
+        """Move current files to delete output folder"""
+        if not self.delete_output_folder or not self.paired_files or self.current_index < 0:
+            return
+
         try:
-            with open(config_path, 'r') as f:
-                self.config = json.load(f)
-                
-            # Restore folders
-            self.image_folder = self.config['image_folder']
-            self.txt_folder = self.config['txt_folder']
-            self.edges_folder = self.config.get('edges_folder')
-            self.drawing_output_folder = self.config['drawing_output_folder']
-            
-            # Restore files and index
-            if self.image_folder and self.txt_folder:
-                self.image_files = [f for f in os.listdir(self.image_folder) 
-                                  if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-                self.txt_files = [f for f in os.listdir(self.txt_folder) 
-                                if f.lower().endswith('.txt')]
-                self.update_pairs()
-                self.current_index = self.config['current_index']
-                self.load_current_pair()
-            
-            # Restore tags
-            for tag_text, position in self.config['tags']:
-                self.add_new_tag(tag_text, position, from_config=True)
-                
-            self.status_label.setText("Config loaded successfully")
-        except FileNotFoundError:
-            self.status_label.setText("No config file found")
+            # Get current file paths
+            img_path, txt_path = self.paired_files[self.current_index]
+            base_name = os.path.basename(img_path)
+            txt_name = os.path.basename(txt_path)
+            edge_path = os.path.join(self.edges_folder, base_name) if self.edges_folder else None
+
+            # Prepare destination paths
+            ref_dest = os.path.join(self.deleted_refs_folder, base_name)
+            txt_dest = os.path.join(self.deleted_txt_folder, txt_name)
+            edge_dest = os.path.join(self.deleted_edges_folder, base_name) if edge_path else None
+
+            # Move files with safety checks
+            moved_files = []
+            try:
+                # Move reference image
+                os.rename(img_path, ref_dest)
+                moved_files.append(("reference", img_path, ref_dest))
+
+                # Move text file
+                os.rename(txt_path, txt_dest)
+                moved_files.append(("text", txt_path, txt_dest))
+
+                # Move edge image if it exists
+                if edge_path and os.path.exists(edge_path):
+                    os.rename(edge_path, edge_dest)
+                    moved_files.append(("edge", edge_path, edge_dest))
+
+                # Verify all moves were successful
+                all_moves_verified = all(
+                    os.path.exists(dest) and not os.path.exists(src) 
+                    for _, src, dest in moved_files
+                )
+
+                if all_moves_verified:
+                    # Remove current pair from list and update display
+                    self.paired_files.pop(self.current_index)
+                    if self.paired_files:
+                        self.current_index = min(self.current_index, len(self.paired_files) - 1)
+                        self.load_current_pair()
+                    else:
+                        self.current_index = -1
+                        self.reference_canvas.clear_drawing()
+                        self.edges_canvas.clear_drawing()
+                        self.text_editor.clear()
+
+                    self.status_label.setText(f"Successfully moved files to {self.delete_output_folder}")
+                else:
+                    raise Exception("Move verification failed")
+
+            except Exception as e:
+                # If any operation fails, try to restore moved files
+                for file_type, src, dest in moved_files:
+                    try:
+                        if os.path.exists(dest):
+                            os.rename(dest, src)
+                    except Exception as restore_error:
+                        self.status_label.setText(
+                            f"Error restoring {file_type} file: {str(restore_error)}"
+                        )
+                raise Exception(f"Move operation failed: {str(e)}")
+
         except Exception as e:
-            self.status_label.setText(f"Error loading config: {str(e)}")
+            self.status_label.setText(f"Error moving files: {str(e)}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
