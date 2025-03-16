@@ -3,12 +3,12 @@ import os
 from pathlib import Path
 import json
 from PIL import Image, ImageDraw
-from PySide6.QtCore import Qt, Signal, Slot, QObject, QSize, QTimer, QEvent
+from PySide6.QtCore import Qt, Signal, Slot, QObject, QSize, QTimer, QEvent, QPointF
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QIcon, QPainterPath
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSlider, QFileDialog, QScrollArea,
-    QGraphicsView, QGraphicsScene, QFrame, QTextEdit, QInputDialog, QColorDialog, QCheckBox
+    QGraphicsView, QGraphicsScene, QFrame, QTextEdit, QInputDialog, QColorDialog, QCheckBox, QDialog, QLineEdit
 )
 import random
 import re
@@ -23,11 +23,18 @@ class DrawingCanvas(QWidget):
         self.brush_size = 5
         self.brush_intensity = 1.0
         self.layer_opacity = 0.5
-        self.color_picking = False  # Added this initialization
-        self.picked_color = None    # Added this initialization
-        self.shape_points = []      # Added this initialization
+        self.color_picking = False
+        self.picked_color = None
+        self.shape_points = []
         self.is_drawing_shape = False
-        self.eraser_mode = False  # Add eraser state
+        self.eraser_mode = False
+        
+        # Improved smoothing variables
+        self.smooth_drawing = False
+        self.smooth_level = 10  # Stabilizer strength (higher = more smoothing)
+        self.current_point = None  # Current mouse position
+        self.target_point = None   # Target point for smoothing
+        self.show_stabilizer_cursor = True  # Whether to show the stabilizer cursor
         
         # Get main window reference
         self.main_window = parent
@@ -44,10 +51,11 @@ class DrawingCanvas(QWidget):
         
         # Initialize undo history
         self.history = []
-        self.redo_stack = []  # Add redo stack
+        self.redo_stack = []
         self.max_history = 50
         
         self.setMinimumSize(512, 512)
+        self.setMouseTracking(True)  # Enable mouse tracking for cursor updates
         
         # Add black background and buttons only for main drawing canvas
         if isinstance(parent, QMainWindow):
@@ -55,7 +63,7 @@ class DrawingCanvas(QWidget):
             self.black_bg.fill(QColor(0, 0, 0))
             
             # Add eraser button with emoji icon
-            self.eraser_btn = QPushButton("✏️", self)  # White circle for eraser
+            self.eraser_btn = QPushButton("✏️", self)
             self.eraser_btn.setToolTip("Toggle Eraser Mode (Draw/Erase)")
             self.eraser_btn.setFixedSize(30, 30)
             self.eraser_btn.setCheckable(True)
@@ -79,7 +87,7 @@ class DrawingCanvas(QWidget):
             self.eraser_btn.move(10, 10)
             
             # Add color picker button with emoji icon
-            self.color_picker_btn = QPushButton("🎯", self)  # Changed to target emoji
+            self.color_picker_btn = QPushButton("🎯", self)
             self.color_picker_btn.setToolTip("Pick color and draw shape")
             self.color_picker_btn.setFixedSize(30, 30)
             self.color_picker_btn.clicked.connect(self.start_color_picker)
@@ -97,6 +105,30 @@ class DrawingCanvas(QWidget):
             """)
             self.color_picker_btn.move(50, 10)
 
+            # Add smooth drawing toggle button
+            self.smooth_btn = QPushButton("🖋️", self)  # Changed to fountain pen
+            self.smooth_btn.setToolTip("Toggle Stroke Stabilizer")
+            self.smooth_btn.setFixedSize(30, 30)
+            self.smooth_btn.setCheckable(True)
+            self.smooth_btn.clicked.connect(self.toggle_smooth_drawing)
+            self.smooth_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #b3b3ff;
+                    border: none;
+                    border-radius: 15px;
+                    font-size: 18px;
+                    padding: 0px;
+                }
+                QPushButton:checked {
+                    background-color: #8080ff;
+                    font-size: 18px;
+                }
+                QPushButton:hover {
+                    background-color: #c6c6ff;
+                }
+            """)
+            self.smooth_btn.move(90, 10)
+
             # ===== New HEX picker button =====
             self.hex_picker_btn = QPushButton("🎨", self)
             self.hex_picker_btn.setToolTip("Pick a color and add its HEX code to text")
@@ -113,9 +145,18 @@ class DrawingCanvas(QWidget):
                     background-color: #c6e3ff;
                 }
             """)
-            self.hex_picker_btn.move(90, 10)
+            self.hex_picker_btn.move(130, 10)
             self.hex_picker_btn.clicked.connect(self.open_hex_color_picker)
-            # ===== End of new HEX picker button =====
+            
+            # Setup timer for smooth drawing
+            self.smooth_timer = QTimer(self)
+            self.smooth_timer.timeout.connect(self.update_smooth_line)
+            self.smooth_timer.setInterval(10)  # 10ms interval for smooth updates
+            
+            # Setup cursor update timer
+            self.cursor_timer = QTimer(self)
+            self.cursor_timer.timeout.connect(self.update_stabilizer_cursor)
+            self.cursor_timer.setInterval(16)  # ~60fps for cursor updates
             
     def set_base_image(self, image_path):
         if image_path and os.path.exists(image_path):
@@ -149,6 +190,38 @@ class DrawingCanvas(QWidget):
         if self.color_picking and len(self.shape_points) > 0:
             painter.drawPixmap(0, 0, self.temp_layer)
             
+        # Draw stabilizer cursor if enabled
+        if self.smooth_drawing and self.show_stabilizer_cursor and not self.drawing:
+            pos = self.mapFromGlobal(self.cursor().pos())
+            
+            # Draw outer circle (target position)
+            painter.setPen(QPen(QColor(255, 255, 255, 180), 1, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(pos, self.brush_size + 5, self.brush_size + 5)
+            
+            # Draw inner circle (brush size)
+            painter.setPen(QPen(QColor(255, 255, 255, 220), 1, Qt.SolidLine))
+            painter.drawEllipse(pos, self.brush_size, self.brush_size)
+            
+            # Draw center dot
+            painter.setBrush(QColor(255, 255, 255, 255))
+            painter.drawEllipse(pos, 1, 1)
+            
+        # Draw line between current and target points during smooth drawing
+        if self.smooth_drawing and self.drawing and self.current_point and self.target_point:
+            painter.setPen(QPen(QColor(100, 200, 255, 150), 1, Qt.DashLine))
+            painter.drawLine(self.current_point, self.target_point)
+            
+            # Draw target cursor
+            painter.setPen(QPen(QColor(100, 200, 255, 200), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(self.target_point, 3, 3)
+            
+            # Draw current position cursor
+            painter.setPen(QPen(QColor(255, 255, 255, 220), 1))
+            painter.setBrush(QColor(255, 255, 255, 150))
+            painter.drawEllipse(self.current_point, self.brush_size, self.brush_size)
+            
     def start_color_picker(self):
         """Start color picker mode"""
         self.color_picking = True
@@ -168,7 +241,7 @@ class DrawingCanvas(QWidget):
                     self.is_drawing_shape = True
                     if hasattr(self.main_window, 'status_label'):
                         self.main_window.status_label.setText("Draw shape to fill")
-                    self.setCursor(Qt.CrossCursor)  # Cross cursor for drawing shape
+                    self.setCursor(Qt.CrossCursor)
             elif self.is_drawing_shape:
                 # Start drawing shape
                 self.shape_points = [event.position().toPoint()]
@@ -176,15 +249,27 @@ class DrawingCanvas(QWidget):
             else:
                 # Normal drawing mode
                 self.drawing = True
-                self.last_point = event.position().toPoint()
-                self.setCursor(Qt.ClosedHandCursor)  # Closed hand cursor for drawing
+                point = event.position().toPoint()
+                
+                # Save current state for undo
                 self.history.append(QPixmap(self.drawing_layer))
                 if len(self.history) > self.max_history:
                     self.history.pop(0)
-                    
-            # Clear redo stack when new drawing occurs
-            if self.drawing or self.is_drawing_shape:
+                
+                # Clear redo stack
                 self.redo_stack.clear()
+                
+                if self.smooth_drawing:
+                    # Initialize smooth drawing
+                    self.current_point = point
+                    self.target_point = point
+                    self.last_point = point
+                    self.smooth_timer.start()
+                    self.show_stabilizer_cursor = False  # Hide the stabilizer cursor while drawing
+                else:
+                    # Regular drawing
+                    self.last_point = point
+                    self.setCursor(Qt.ClosedHandCursor)
             
     def mouseMoveEvent(self, event):
         if self.is_drawing_shape and event.buttons() & Qt.LeftButton:
@@ -192,29 +277,33 @@ class DrawingCanvas(QWidget):
             self.shape_points.append(event.position().toPoint())
             self.update_temp_shape()
         elif self.drawing:
-            end_point = event.position().toPoint()
-            painter = QPainter(self.drawing_layer)
-            painter.setRenderHint(QPainter.Antialiasing)
-            
-            if self.eraser_mode:
-                # Erase by drawing with composition mode clear
-                painter.setCompositionMode(QPainter.CompositionMode_Clear)
-                pen = QPen()
-                pen.setWidth(self.brush_size * 2)  # Make eraser slightly bigger
-                pen.setCapStyle(Qt.RoundCap)
-                painter.setPen(pen)
+            if self.smooth_drawing:
+                # Just update the target point, actual drawing happens in timer
+                self.target_point = event.position().toPoint()
             else:
-                # Normal drawing mode
-                pen = QPen()
-                pen.setWidth(self.brush_size)
-                pen.setCapStyle(Qt.RoundCap)
-                pen.setColor(QColor(255, 255, 255, int(255 * self.brush_intensity)))
-                painter.setPen(pen)
-            
-            painter.drawLine(self.last_point, end_point)
-            self.last_point = end_point
-            painter.end()
-            self.update()
+                # Regular drawing
+                end_point = event.position().toPoint()
+                
+                painter = QPainter(self.drawing_layer)
+                painter.setRenderHint(QPainter.Antialiasing)
+                
+                if self.eraser_mode:
+                    painter.setCompositionMode(QPainter.CompositionMode_Clear)
+                    pen = QPen()
+                    pen.setWidth(self.brush_size * 2)
+                    pen.setCapStyle(Qt.RoundCap)
+                    painter.setPen(pen)
+                else:
+                    pen = QPen()
+                    pen.setWidth(self.brush_size)
+                    pen.setCapStyle(Qt.RoundCap)
+                    pen.setColor(QColor(255, 255, 255, int(255 * self.brush_intensity)))
+                    painter.setPen(pen)
+                
+                painter.drawLine(self.last_point, end_point)
+                painter.end()
+                self.last_point = end_point
+                self.update()
             
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -227,7 +316,13 @@ class DrawingCanvas(QWidget):
                 self.setCursor(Qt.ArrowCursor)
             else:
                 self.drawing = False
-                self.setCursor(Qt.ArrowCursor)
+                if self.smooth_drawing:
+                    self.smooth_timer.stop()
+                    self.show_stabilizer_cursor = True  # Show the stabilizer cursor again
+                    self.setCursor(Qt.BlankCursor)  # Keep cursor hidden for custom cursor
+                else:
+                    self.setCursor(Qt.ArrowCursor)
+                self.update()  # Force repaint to update cursor
                 
     def update_temp_shape(self):
         """Update temporary shape preview"""
@@ -344,6 +439,66 @@ class DrawingCanvas(QWidget):
             hex_color = hex_color.lower()
             new_text = f"{hex_color},{current_text}".strip()
             self.main_window.text_editor.setPlainText(new_text)
+
+    def toggle_smooth_drawing(self):
+        """Toggle smooth drawing mode"""
+        self.smooth_drawing = self.smooth_btn.isChecked()
+        
+        if self.smooth_drawing:
+            if hasattr(self.main_window, 'status_label'):
+                self.main_window.status_label.setText("🖋️ Stroke stabilizer ENABLED")
+            self.setCursor(Qt.BlankCursor)  # Hide system cursor
+            self.cursor_timer.start()  # Start cursor update timer
+        else:
+            if hasattr(self.main_window, 'status_label'):
+                self.main_window.status_label.setText("Normal drawing mode")
+            self.setCursor(Qt.ArrowCursor)  # Restore system cursor
+            self.cursor_timer.stop()  # Stop cursor update timer
+        
+        self.update()  # Force repaint to show/hide custom cursor
+                
+    def update_smooth_line(self):
+        """Update the smooth line based on the current and target points"""
+        if not self.drawing or not self.smooth_drawing:
+            return
+            
+        # Calculate the new current point by moving towards the target
+        # This creates the stabilizing effect - higher smooth_level = more stable
+        weight = 1.0 / self.smooth_level
+        
+        new_x = int(self.current_point.x() + (self.target_point.x() - self.current_point.x()) * weight)
+        new_y = int(self.current_point.y() + (self.target_point.y() - self.current_point.y()) * weight)
+        
+        self.current_point = QPointF(new_x, new_y).toPoint()
+        
+        # Draw line from last point to current point
+        if self.last_point and self.current_point:
+            painter = QPainter(self.drawing_layer)
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            if self.eraser_mode:
+                painter.setCompositionMode(QPainter.CompositionMode_Clear)
+                pen = QPen()
+                pen.setWidth(self.brush_size * 2)
+                pen.setCapStyle(Qt.RoundCap)
+                painter.setPen(pen)
+            else:
+                pen = QPen()
+                pen.setWidth(self.brush_size)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setColor(QColor(255, 255, 255, int(255 * self.brush_intensity)))
+                painter.setPen(pen)
+            
+            painter.drawLine(self.last_point, self.current_point)
+            painter.end()
+            
+            self.last_point = self.current_point
+            self.update()
+
+    def update_stabilizer_cursor(self):
+        """Update the custom cursor for the stabilizer"""
+        if self.smooth_drawing and not self.drawing:
+            self.update()  # Force repaint to update cursor position
 
 class TagButton(QWidget):
     def __init__(self, text, position, parent=None):
@@ -503,6 +658,9 @@ class MainWindow(QMainWindow):
             'current_index': -1,
             'tags': []
         }
+        
+        # Add pair_mode attribute with default value
+        self.pair_mode = True
         
         # Setup UI first
         self.setup_ui()
@@ -792,7 +950,7 @@ class MainWindow(QMainWindow):
 
         slider_layout.addWidget(delete_container)
         
-        main_layout.addWidget(slider_panel)
+        main_layout.addWidget(slider_panel)  # Add the slider panel widget instead of the layout
         
         # Add save button
         save_btn = QPushButton("Save (Ctrl+S)")
@@ -861,12 +1019,16 @@ class MainWindow(QMainWindow):
 
         # Filter images if bis checkbox is checked
         if self.bis_checkbox.isChecked():
-            # Get base names of all images that have a bis version
-            bis_images = {f for f in self.image_files if f.endswith(f'{self.bis_suffix}.png')}
-            original_names = {f.replace(f'{self.bis_suffix}.png', '.png') for f in bis_images}
-            # Keep both original images and their bis versions
-            filtered_image_files = [f for f in self.image_files 
-                                  if f in original_names or f.replace(f'{self.bis_suffix}.png', '.png') in original_names]
+            if hasattr(self, 'pair_mode') and self.pair_mode:
+                # Pair mode: Show original images and their filtered versions
+                bis_images = {f for f in self.image_files if f.endswith(f'{self.bis_suffix}.png')}
+                original_names = {f.replace(f'{self.bis_suffix}.png', '.png') for f in bis_images}
+                # Keep both original images and their bis versions
+                filtered_image_files = [f for f in self.image_files 
+                                      if f in original_names or f.replace(f'{self.bis_suffix}.png', '.png') in original_names]
+            else:
+                # Contains mode: Show any image containing the filter text
+                filtered_image_files = [f for f in self.image_files if self.bis_suffix in f]
 
         for img_file in filtered_image_files:
             base_name = os.path.splitext(img_file)[0]
@@ -1085,7 +1247,8 @@ class MainWindow(QMainWindow):
             'edges_folder': self.edges_folder,
             'drawing_output_folder': self.drawing_output_folder,
             'current_index': self.current_index,
-            'tags': [[btn.text, btn.position] for btn in self.tag_buttons.values()]
+            'tags': [[btn.text, btn.position] for btn in self.tag_buttons.values()],
+            'pair_mode': self.pair_mode
         })
         
         try:
@@ -1134,6 +1297,9 @@ class MainWindow(QMainWindow):
             for tag_text, position in self.config.get('tags', []):
                 self.add_new_tag(tag_text, position, from_config=True)
                 
+            # Restore pair_mode
+            self.pair_mode = self.config.get('pair_mode', True)
+            
             self.status_label.setText("Config loaded successfully")
         except FileNotFoundError:
             self.status_label.setText("No config file found")
@@ -1222,15 +1388,43 @@ class MainWindow(QMainWindow):
         self.palette_widget.set_colors(processed_codes)
 
     def change_bis_suffix(self):
-        """Open dialog to change the bis suffix"""
-        new_suffix, ok = QInputDialog.getText(
-            self,
-            "Change Suffix",
-            "Enter new suffix for duplicates:",
-            text=self.bis_suffix
-        )
-        if ok and new_suffix:
-            self.bis_suffix = new_suffix
+        """Open dialog to change the bis suffix and filter mode"""
+        # Create a custom dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Filter Settings")
+        dialog_layout = QVBoxLayout(dialog)
+        
+        # Add suffix input
+        suffix_layout = QHBoxLayout()
+        suffix_label = QLabel("Filter suffix:")
+        suffix_input = QLineEdit(self.bis_suffix)
+        suffix_layout.addWidget(suffix_label)
+        suffix_layout.addWidget(suffix_input)
+        dialog_layout.addLayout(suffix_layout)
+        
+        # Add mode checkbox
+        self.pair_mode_checkbox = QCheckBox("Only show pairs (original + filtered)")
+        self.pair_mode_checkbox.setChecked(True)  # Default to pair mode
+        self.pair_mode_checkbox.setToolTip("If checked, shows only images with matching filtered versions\n"
+                                          "If unchecked, shows any image containing the filter text")
+        dialog_layout.addWidget(self.pair_mode_checkbox)
+        
+        # Add buttons
+        button_box = QHBoxLayout()
+        ok_button = QPushButton("OK")
+        cancel_button = QPushButton("Cancel")
+        ok_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        button_box.addWidget(ok_button)
+        button_box.addWidget(cancel_button)
+        dialog_layout.addLayout(button_box)
+        
+        # Show dialog
+        result = dialog.exec()
+        
+        if result == QDialog.Accepted:
+            self.bis_suffix = suffix_input.text()
+            self.pair_mode = self.pair_mode_checkbox.isChecked()
             self.update_pairs()
 
     def select_delete_output(self):
