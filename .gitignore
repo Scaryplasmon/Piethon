@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+/pyside6docs/
+/txtGen/
+/csm/
+/openpose/
 # Distribution / packaging
 .Python
 build/
@@ -185,3 +189,5 @@ pyside6docs2/QFont.txt
 pyside6docs2/QPainter.txt
 pyside6docs2/qtquick-input-mouseevents.txt
 links.txt
+data_manager_config.json
+data_manager_config.json
