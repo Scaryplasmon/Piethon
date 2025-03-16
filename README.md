@@ -7,7 +7,7 @@ Keep in mind that all of these are tailor-suited to my needs of the time, so the
 
 # Requirements
 ```bash
-    pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
 ###Croppy
