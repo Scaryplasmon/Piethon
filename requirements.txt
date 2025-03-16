@@ -1,0 +1,7 @@
+PySide6
+opencv-python
+tk
+tkinterdnd2
+rembg
+numpy
+pillow

@@ -9,7 +9,6 @@ import threading
 from rembg import remove
 import numpy as np
 from queue import Queue
-from PIL import Image, ImageTk, ImageOps
 import cv2
 import random
 
