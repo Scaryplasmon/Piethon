@@ -1,5 +1,5 @@
 # Piethon
-These are some apps that I´ve developed to quicken some boring workflows reducing them to just a few clicks.
+These are some apps that I´ve developed to quicken some boring workflows or to better handle large loads of manual work.
 
 Feel free to check it out and grab what u need. 
 
@@ -10,15 +10,18 @@ Keep in mind that all of these are tailor-suited to my needs of the time, so the
 pip install -r requirements.txt
 ```
 
-###Croppy
+## Croppy
 Croppy lets you quickly cut and crop any type of image and resize it you the size u want.
 
-
 Supports:
--Mouse and Keyboard exclusive and mixed control
--Square, Free, Grid cropping available
--Rembg incorporated with queue mechanism to just keep cropping AFAP
--Preview mechanism to quickly check the quality of the crops.
 
+- Square, Free and Grid Cropping supported 🪟
+- Lasso Crop (padded to square) 🎗️
+- Drag and Drop load 👊🖐️
+- Viewport navigation 
+- Rembg with queue mechanism to just keep cropping AFAP 
+- Feed Column to check your previous croppings 🎞️
+- Mouse and Keyboard exclusive and mixed control to crop with one hand🖐
+- ⬅️➡️ to iterate through images faster than light
 
 ###Drawy
