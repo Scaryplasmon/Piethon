@@ -62,7 +62,7 @@ For when you need to modify a lot of images without ruining pixel quality
 
 Supports:
 
-- Slide panel to Preview changes ✏️
+- Slide panel to Preview changes 🪟
 - Drag and Drop load 👊🖐️
 - ⬅️➡️ to iterate through images faster than light ⚡
 - Hue, Contrast, Saturation, Value, RGB, Gamma, Posterize, Highlights, Shadows 🪸
