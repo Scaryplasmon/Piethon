@@ -40,6 +40,15 @@ I've used this to create the [DoodlePix](https://github.com/Scaryplasmon/DoodleP
     </a>
 </p>
 
+Supports:
+
+- Drawing masks or line art ✏️
+- Color picker to HEXCODE 🪈
+- Fast prompt editing 🖊️
+- Tagging for addition and removal 📎
+- Save States to pick up from where you left 🍵
+- Fast Delete from multiple folders with chance of backup 🪣
+- ⬅️➡️ to iterate through images faster than light ⚡
 
 ## Edity
 
@@ -50,3 +59,10 @@ For when you need to modify a lot of images without ruining pixel quality
     <img src="assets/Edity480.gif" alt="Doodle">
     </a>
 </p>
+
+Supports:
+
+- Slide panel to Preview changes ✏️
+- Drag and Drop load 👊🖐️
+- ⬅️➡️ to iterate through images faster than light ⚡
+- Hue, Contrast, Saturation, Value, RGB, Gamma, Posterize, Highlights, Shadows 🪸
